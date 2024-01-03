@@ -7,11 +7,15 @@ import shimmerevm_abi
 ######### ADDRESSES #########
 TOKEN_ADDRESS_LUM = Web3.to_checksum_address('0x4794Aeafa5Efe2fC1F6f5eb745798aaF39A81D3e')  # LUM
 LUM_DECIMALS = 18  # ether
+LUM_PID = 1
 TOKEN_ADDRESS_SMR = Web3.to_checksum_address('0x1074010000000000000000000000000000000000')  # SMR
 SMR_DECIMALS = 6  # mwei
 
 SHIMMERSEA_SWAP_SPENDER_ADDRESS = Web3.to_checksum_address('0x3edafd0258f75e0f49d570b1b28a1f7a042bcec3')
+SHIMMERSEA_ZAP_SPENDER_ADDRESS = Web3.to_checksum_address('0xc2ddeef3ce6dc6a0ccd3c9a0d8173355c9926836')
 
+# https://explorer.evm.shimmer.network/address/0xC2Ddeef3Ce6DC6A0CCD3C9a0D8173355C9926836?tab=contract
+SHIMMERSEA_FARM_UNI_V2_ZAP = Web3.to_checksum_address('0xC2Ddeef3Ce6DC6A0CCD3C9a0D8173355C9926836')
 
 ######### ADDRESSES END #########
 SHIMMER_CHAIN_ID = 148
@@ -120,6 +124,32 @@ def truncate_to_upper_digits(number, digits):
     return number // scale_down_factor
 
 
+def get_smr_balance(web3, address):
+    # Get the balance in Wei (the smallest denomination)
+    balance_wei = web3.eth.get_balance(address)
+
+    # Since SMR has 6 decimals but the evm has 18 decimals, divide by 10^18 to convert to SMR
+    balance_smr = balance_wei / 10**18
+
+    # Format the balance to show up to 6 decimal places
+    # formatted_balance_smr = "{:.6f}".format(balance_smr)
+
+    return balance_smr
+
+
+def get_token_balance(web3, token_address, wallet_address, token_decimals, token_abi):
+    # Create the contract instance with the newly-deployed address
+    token = web3.eth.contract(address=token_address, abi=token_abi)
+
+    # Query balance
+    balance = token.functions.balanceOf(wallet_address).call()
+
+    # Convert balance to a human-friendly number
+    balance = balance / (10 ** token_decimals)
+
+    return balance
+
+
 def shimmersea_harvest_all(web3, account, private_key, pids, chain_id, gas, gas_price):
     contract_address = Web3.to_checksum_address('0x686eAd3Fee35C811684E6158408B49220d912dD4')
     abi = json.loads(shimmerevm_abi.shimmersea_harvest_all_abi_string)
@@ -127,6 +157,22 @@ def shimmersea_harvest_all(web3, account, private_key, pids, chain_id, gas, gas_
     nonce = ethereum_contract.web3.eth.get_transaction_count(account)
     txn = ethereum_contract.build_transaction(
         'harvestAll', [pids], account, nonce, chain_id, gas, gas_price
+    )
+    txn_receipt = ethereum_contract.send_transaction(txn, private_key)
+    return txn_receipt
+
+
+def shimmersea_zap_in(web3, account, private_key, pid, token_in, token_in_amount, token_amount_out_min, chain_id, gas, gas_price):
+    contract_address = SHIMMERSEA_FARM_UNI_V2_ZAP
+    abi = json.loads(shimmerevm_abi.shimmersea_farm_uni_v2_zap_abi_string)
+    ethereum_contract = EthereumShimmerContract(web3, contract_address, abi)
+
+    nonce = ethereum_contract.web3.eth.get_transaction_count(account)
+
+    txn = ethereum_contract.build_transaction(
+        'zapIn',
+        [pid, token_amount_out_min, token_in, token_in_amount],
+        account, nonce, chain_id, gas, gas_price
     )
     txn_receipt = ethereum_contract.send_transaction(txn, private_key)
     return txn_receipt
@@ -160,7 +206,7 @@ def shimmersea_swap(web3, account, private_key, amount_in, amount_out_min, path,
 
 
 def main():
-    TASK = 'SWAP_LUM_TO_SMR'
+    TASK = 'FARM_LUM'
 
     provider_url = os.getenv('SHIMMEREVM_NODE_ADDRESS_SPYCE5')  # The node url
     my_account = os.getenv('SHIMMEREVM_DEV_PUBLIC_ADDRESS')  # Public address
@@ -172,6 +218,17 @@ def main():
 
     if private_key is None:
         raise ValueError("Private key not found in environment variables")
+
+    my_account = web3.to_checksum_address(my_account)
+
+    # Get the balance of the address
+    smr_balance = get_smr_balance(web3, my_account)
+    print(f"SMR balance: {smr_balance}")
+
+    lum_balance = get_token_balance(web3, TOKEN_ADDRESS_LUM, my_account, LUM_DECIMALS, shimmerevm_abi.shimmersea_lum_token_abi_string)
+    print(f"LUM balance: {lum_balance}")
+    lum_balance_ether = web3.to_wei(lum_balance, 'ether')
+    print(f"LUM balance ether: {lum_balance_ether}")
 
     if 'HARVEST_ALL' in TASK:
         pids = [1]  # Replace with actual pool IDs
@@ -223,6 +280,23 @@ def main():
         # Swap the LUM for SMR
         txn_receipt = shimmersea_swap(web3, my_account, private_key, amount_in, amount_out_min, path, to, deadline, SHIMMER_CHAIN_ID, SHIMMER_GAS_UPPER_LIMIT,
                                       SHIMMER_GAS_PRICE)
+        print(txn_receipt)
+        status = check_transaction_status(txn_receipt)
+
+    elif "FARM_LUM" in TASK:
+        lum_amount = 0.005
+
+        amount_to_approve = web3.to_wei(lum_amount, 'ether')  # Amount of LUM to approve
+        approve_receipt = approve_token(web3, my_account, private_key, TOKEN_ADDRESS_LUM, SHIMMERSEA_ZAP_SPENDER_ADDRESS, amount_to_approve, SHIMMER_CHAIN_ID,
+                                        SHIMMER_GAS_UPPER_LIMIT,
+                                        SHIMMER_GAS_PRICE)
+        print(approve_receipt)
+        status = check_transaction_status(approve_receipt)
+
+        if status != 1:
+            raise ValueError(f"Could not approve {lum_amount} LUM.")
+        amount_in_min = 0
+        txn_receipt = shimmersea_zap_in(web3, my_account, private_key, LUM_PID, TOKEN_ADDRESS_LUM, amount_to_approve, amount_in_min, SHIMMER_CHAIN_ID, SHIMMER_GAS_UPPER_LIMIT, SHIMMER_GAS_PRICE)
         print(txn_receipt)
         status = check_transaction_status(txn_receipt)
 
