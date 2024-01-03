@@ -163,8 +163,8 @@ def main():
     TASK = 'SWAP_LUM_TO_SMR'
 
     provider_url = os.getenv('SHIMMEREVM_NODE_ADDRESS_SPYCE5')  # The node url
-    my_account = os.getenv('SHIMMEREVM_FIREFOX_DEV_PUBLIC_ADDRESS')  # Public address
-    private_key = os.getenv('SHIMMEREVM_FIREFOX_DEV_PRIVATEKEY')  # Get private key from environmental variable
+    my_account = os.getenv('SHIMMEREVM_DEV_PUBLIC_ADDRESS')  # Public address
+    private_key = os.getenv('SHIMMEREVM_DEV_PRIVATEKEY')  # Get private key from environmental variable
 
     web3 = Web3(Web3.HTTPProvider(provider_url))
     if not web3.is_connected():
